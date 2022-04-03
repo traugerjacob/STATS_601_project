@@ -95,14 +95,15 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
         ) # parkinson's volatility
 
         for ell in range(1, minute_lag + 1):
-            train_df["price_lag_" + str(ell)] = lp[j].shift(ell)[train_df.index]
-            train_df["vw_price_lag_" + str(ell)] = (lp[j].shift(ell) * vol[j].shift(ell))[train_df.index]
+            train_df["price_lag_" + str(ell)] = lp[j].shift(ell)[train_df.index] # price at time t - ell
+            train_df["vw_price_lag_" + str(ell)] = (lp[j].shift(ell) * vol[j].shift(ell))[train_df.index] # volume-weighted price at time t - ell
             train_df = pd.concat([
                 train_df,
                 lp[[i for i in lp if i != j]].shift(ell).rename(
-                    columns={k: "asset_" + str(k - 1) + "_lag_" + str(ell)
+                    columns={k: "asset_" + str(k) + "_lag_" + str(ell) if k < j
+                             else "asset_" + str(k - 1) + "_lag_" + str(ell)
                              for k in lp[[i for i in lp if i != j]]}).loc[train_df.index]
-            ], axis=1)
+            ], axis=1) # price of other assets at time t - ell
         full_train_df = pd.concat([full_train_df, train_df.reset_index()])
 
     duration = time() - start_time
@@ -111,18 +112,41 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
     return full_train_df.reset_index(drop = True)
 
 
-def walkforward_cv(data, y, regressor_cols, train_window, test_window, model_class, model_args):
+def walkforward_cv(data,
+                   y,
+                   regressor_cols,
+                   train_window,
+                   test_window,
+                   model_class,
+                   model_args,
+                   parallel=False):
     """
     Run walk-forward cross-validation in parallel for a given model with 'fit' and 'score'
     methods
+
+    Params
+    ------
+    * data: DataFrame, includes both the response variable and features to use for training
+    * y: str, name of the response column in `data`
+    * regressor_cols: list, column names to use as features for training
+    * train_window: int, number of samples to use for training in each walkforward-window
+    * test_window: int, number of samples to use for validation in each walkforward-window
+    * model_class: model class to use for training
+    * model_args: dict, dictionary of the hyperparameters to use for the model architecture
+    * parallel: bool, if True, will run jobs in parallel using a 'multiprocessing' backend. If False,
+        will run jobs sequentially
     NOTE: need to order by increasing timestamp
     """
-    @delayed
-    @wrap_non_picklable_objects
     def _fit_and_score(train_X, test_X, model, regressor_cols, y):
         model.fit(train_X[regressor_cols], train_X[y])
 
         return np.corrcoef(model.predict(test_X[regressor_cols]), test_X[y])[0,1]
+
+    @delayed
+    @wrap_non_picklable_objects
+    def _delayed_fit_and_score(train_X, test_X, model, regressor_cols, y):
+        return _fit_and_score(train_X, test_X, model, regressor_cols, y)
+
 
     nbatches = int(np.floor((data.shape[0] - train_window) / test_window))
     job_args = {
@@ -135,21 +159,27 @@ def walkforward_cv(data, y, regressor_cols, train_window, test_window, model_cla
         }
         for b in range(nbatches)
     }
-    model_jobs = [_fit_and_score(**b) for b in job_args.values()]
-    print("Running jobs in parallel")
-    with parallel_backend("multiprocessing"):
-        model_scores = Parallel(n_jobs=min(nbatches, 20), verbose=11, pre_dispatch='n_jobs')(model_jobs)
+    if parallel:
+        model_jobs = [_delayed_fit_and_score(**b) for b in job_args.values()]
+        print("Running jobs in parallel")
+        with parallel_backend("multiprocessing"):
+            model_scores = Parallel(n_jobs=min(nbatches, 20), verbose=11, pre_dispatch='n_jobs')(model_jobs)
+    else:
+        model_scores = []
+        print("Running jobs sequentially")
+        for j in job_args.values():
+            model_scores.append(_fit_and_score(**j))
 
     return model_scores
 
 
-train_df = create_features(lp, vol)
+train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
 train_df = train_df.sort_values("timestamp").dropna()
 regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
 model_scores = walkforward_cv(train_df, "return", regressor_cols, WF_TRAIN_WINDOW, WF_TEST_WINDOW,
                               RandomForestRegressor,
                               {'n_estimators': 50, 'max_depth': 20, 'max_features': 'auto', 'bootstrap': True})
-model_scores = walkforward_cv(train_df, "return", regressor_cols, WF_TRAIN_WINDOW, WF_TEST_WINDOW,
+model_scores = walkforward_cv(train_df, "return", regressor_cols, 10000, 2000,
                               RidgeCV, {"alphas": np.logspace(-1, 1)})
 np.mean(model_scores)
 
