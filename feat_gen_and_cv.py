@@ -71,15 +71,11 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
         ) # parkinson's volatility
 
         for ell in range(1, minute_lag + 1):
-            train_df["price_lag_" + str(ell)] = lp[j].shift(ell)[train_df.index] # price at time t - ell
+            train_df = pd.concat([train_df, lp.shift(ell).rename(
+                columns={k: "asset_" + str(k) + "_lag_" + str(ell) for k in lp}).loc[train_df.index]
+            ], axis=1) # price of assets at time t - ell
             train_df["vw_price_lag_" + str(ell)] = (lp[j].shift(ell) * vol[j].shift(ell))[train_df.index] # volume-weighted price at time t - ell
-            train_df = pd.concat([
-                train_df,
-                lp[[i for i in lp if i != j]].shift(ell).rename(
-                    columns={k: "asset_" + str(k) + "_lag_" + str(ell) if k < j
-                             else "asset_" + str(k - 1) + "_lag_" + str(ell)
-                             for k in lp[[i for i in lp if i != j]]}).loc[train_df.index]
-            ], axis=1) # price of other assets at time t - ell
+
         full_train_df = pd.concat([full_train_df, train_df.reset_index()])
 
     full_train_df = pd.concat([
