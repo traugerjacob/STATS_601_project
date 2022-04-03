@@ -14,29 +14,6 @@ from time import time
 lp = pd.read_pickle("log_price.df")
 vol = pd.read_pickle("volume_usd.df")
 
-WF_TRAIN_WINDOW = 5000
-WF_TEST_WINDOW = 2500
-
-## Ziwei code
-dt = timedelta(days=1)
-r_hat = pd.DataFrame(index=lp.index[LAG::10], columns=np.arange(10), dtype=np.float64)
-def get_r_hat(A, B):
-    """
-        A: 1440-by-10 dataframe of log prices with columns log_pr_0, ... , log_pr_9
-        B: 1440-by-10 dataframe of trading volumes with columns volu_0, ... , volu_9
-        return: a numpy array of length 10, corresponding to the predictions for the forward 30-minutes returns of assets 0, 1, 2, ..., 9
-    """
-
-    return -(A.iloc[-1] - A.iloc[-30]).values # Use the negative 30-minutes backward log-returns to predict the 30-minutes forward log-r
-
-for t in lp.index[LAG::10]: # compute the predictions every 10 minutes
-    # r_hat.loc[t, :] = get_r_hat(lp.loc[(t - dt):t], vol.loc[(t - dt):t])
-    r_hat.loc[t, :] = -(lp.loc[(t - dt):t].iloc[-1] - lp.loc[(t - dt):t].iloc[-30]).values
-r_fwd = (lp.shift(-30) - lp).iloc[30::10].rename(columns={f"log_pr_{i}": i for i in range(10)})
-r_fwd_all = r_fwd.iloc[:-3].values.ravel() # the final 3 rows are NaNs.
-r_hat_all = r_hat.iloc[:-3].values.ravel()
-np.corrcoef(r_fwd_all, r_hat_all)
-##
 
 def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
     """
@@ -123,6 +100,7 @@ def walkforward_cv(data,
     """
     Run walk-forward cross-validation in parallel for a given model with 'fit' and 'score'
     methods
+    NOTE: need to order by increasing timestamp
 
     Params
     ------
@@ -135,7 +113,11 @@ def walkforward_cv(data,
     * model_args: dict, dictionary of the hyperparameters to use for the model architecture
     * parallel: bool, if True, will run jobs in parallel using a 'multiprocessing' backend. If False,
         will run jobs sequentially
-    NOTE: need to order by increasing timestamp
+
+    Returns
+    -------
+    List of correlation coefficients between predictions and true values of the response for each
+    of the test windows
     """
     def _fit_and_score(train_X, test_X, model, regressor_cols, y):
         model.fit(train_X[regressor_cols], train_X[y])
@@ -176,22 +158,6 @@ def walkforward_cv(data,
 train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
 train_df = train_df.sort_values("timestamp").dropna()
 regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
-model_scores = walkforward_cv(train_df, "return", regressor_cols, WF_TRAIN_WINDOW, WF_TEST_WINDOW,
-                              RandomForestRegressor,
-                              {'n_estimators': 50, 'max_depth': 20, 'max_features': 'auto', 'bootstrap': True})
-model_scores = walkforward_cv(train_df, "return", regressor_cols, 10000, 2000,
-                              RidgeCV, {"alphas": np.logspace(-1, 1)})
+model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
+               {"alphas": np.logspace(-1, 1)}, parallel=True)
 np.mean(model_scores)
-
-SEG_LENGTH = 1
-LAG = 30
-EMA_M = 12
-EMA_A = 2 / (1 + EMA_M)
-
-
-# ema = np.zeros(btc.shape[0])
-# emsd = np.zeros(btc.shape[0])
-# for i in range(2, btc.shape[0] + 1):
-#     idx = btc.shape[0] - i
-#     ema[idx] = EMA_A * btc.iloc[idx]["return"] + (1 - EMA_A) * ema[idx + 1]
-#     emsd[idx] = np.sqrt(EMA_A * np.square(btc.iloc[idx]["return"] - ema[idx + 1]) + (1 - EMA_A) * np.square(emsd[idx + 1]))
