@@ -47,6 +47,7 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
             "return": (lp[j].shift(-30) - lp[j])[30::train_advance], # resp variable
             "weekday":  lp.index[30::train_advance].day_of_week.astype(str), # day of the week
         }).dropna()
+        train_df = pd.get_dummies(train_df)
 
         log_vol_sum = []
         interval_high = []
