@@ -44,11 +44,12 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
     full_train_df = pd.DataFrame()
     for j in lp:
         train_df = pd.DataFrame({
-            "asset": j, # asset number
+            "asset": str(j), # asset number
             "return": (lp[j].shift(-30) - lp[j])[30::train_advance], # resp variable
             "weekday":  lp.index[30::train_advance].day_of_week.astype(str), # day of the week
         }).dropna()
-        train_df = pd.get_dummies(train_df)
+        train_df = pd.concat([train_df[["asset", "return"]],
+                              pd.get_dummies(train_df["weekday"], prefix="weekday")], axis=1)
 
         log_vol_sum = []
         interval_high = []
@@ -85,6 +86,9 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
             ], axis=1) # price of other assets at time t - ell
         full_train_df = pd.concat([full_train_df, train_df.reset_index()])
 
+    full_train_df = pd.concat([
+        pd.get_dummies(full_train_df["asset"], prefix="asset"),
+        full_train_df[[c for c in full_train_df if c != "asset"]]], axis=1)
     duration = time() - start_time
     print("Finished making training df in %s seconds" % np.round(duration, 4))
 
@@ -161,7 +165,7 @@ def walkforward_cv(data,
 
 
 train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
-train_df = train_df.sort_values(["timestamp", "asset"]).dropna()
+train_df = train_df.sort_values("timestamp").dropna()
 regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
 model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                {"alphas": np.logspace(-1, 1)}, parallel=True)
