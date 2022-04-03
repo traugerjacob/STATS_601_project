@@ -11,10 +11,6 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import RidgeCV
 from time import time
 
-lp = pd.read_pickle("log_price.df")
-vol = pd.read_pickle("volume_usd.df")
-
-
 def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
     """
     Generate dataframe of features to use for prediction
@@ -163,9 +159,11 @@ def walkforward_cv(data,
 
     return np.corrcoef(model_scores, rowvar=False)[0,1]
 
-
-train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
-train_df = train_df.sort_values("timestamp").dropna()
-regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
-model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
-               {"alphas": np.logspace(-1, 1)}, parallel=True)
+if __name__ == "__main__":
+    lp = pd.read_pickle("log_price.df")
+    vol = pd.read_pickle("volume_usd.df")
+    train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
+    train_df = train_df.sort_values("timestamp").dropna()
+    regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
+    model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
+                   {"alphas": np.logspace(-1, 1)}, parallel=True)
