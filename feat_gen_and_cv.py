@@ -116,13 +116,15 @@ def walkforward_cv(data,
 
     Returns
     -------
-    List of correlation coefficients between predictions and true values of the response for each
+    Correlation coefficient between predictions and true values of the response over all
     of the test windows
     """
     def _fit_and_score(train_X, test_X, model, regressor_cols, y):
         model.fit(train_X[regressor_cols], train_X[y])
 
-        return np.corrcoef(model.predict(test_X[regressor_cols]), test_X[y])[0,1]
+        return pd.DataFrame({
+            "pred": model.predict(test_X[regressor_cols]),
+            "y": test_X[y]})
 
     @delayed
     @wrap_non_picklable_objects
@@ -145,14 +147,15 @@ def walkforward_cv(data,
         model_jobs = [_delayed_fit_and_score(**b) for b in job_args.values()]
         print("Running jobs in parallel")
         with parallel_backend("multiprocessing"):
-            model_scores = Parallel(n_jobs=min(nbatches, 20), verbose=11, pre_dispatch='n_jobs')(model_jobs)
+            out = Parallel(n_jobs=min(nbatches, 20), verbose=11, pre_dispatch='n_jobs')(model_jobs)
+        model_scores = pd.concat(out, axis=0)
     else:
-        model_scores = []
+        model_scores = pd.DataFrame()
         print("Running jobs sequentially")
         for j in job_args.values():
-            model_scores.append(_fit_and_score(**j))
+            model_scores = pd.concat([model_scores, _fit_and_score(**j)], axis=0)
 
-    return model_scores
+    return np.corrcoef(model_scores, rowvar=False)[0,1]
 
 
 train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
@@ -160,4 +163,3 @@ train_df = train_df.sort_values("timestamp").dropna()
 regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
 model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                {"alphas": np.logspace(-1, 1)}, parallel=True)
-np.mean(model_scores)
