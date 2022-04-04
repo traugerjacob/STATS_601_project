@@ -75,7 +75,6 @@ def create_features(lp, vol, train_advance=10, minute_lag=30, rsi_k=30):
             train_df = pd.concat([train_df, lp.shift(ell).rename(
                 columns={k: "asset_" + str(k) + "_lag_" + str(ell) for k in lp}).loc[train_df.index]
             ], axis=1) # price of assets at time t - ell
-            train_df["vw_price_lag_" + str(ell)] = (lp[j].shift(ell) * vol[j].shift(ell))[train_df.index] # volume-weighted price at time t - ell
 
         full_train_df = pd.concat([full_train_df, train_df.reset_index()])
 
@@ -163,8 +162,8 @@ def fit_model(data, y, regressor_cols, model_class, model_args):
     return mod
 
 if __name__ == "__main__":
-    MINUTE_LAG = 60
-    RSI_K = 60
+    MINUTE_LAG = 30
+    RSI_K = 30
     TRAIN_ADVANCE = 10
     lp = pd.read_pickle("log_price.df")
     vol = pd.read_pickle("volume_usd.df")
