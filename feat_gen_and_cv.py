@@ -165,7 +165,7 @@ def fit_model(data, y, regressor_cols, model_class, model_args):
 if __name__ == "__main__":
     lp = pd.read_pickle("log_price.df")
     vol = pd.read_pickle("volume_usd.df")
-    train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
+    train_df = create_features(lp, vol, train_advance=10, minute_lag=60, rsi_k=60)
     train_df = train_df.sort_values("timestamp").dropna().reset_index(drop=True)
     regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
     model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
