@@ -23,7 +23,7 @@ def get_r_hat(A, B):
         (A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(x, 0)).sum(0) +
          A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(-x, 0)).sum(0)),
     })
-    pred_df = pred_df.assign(**{"weekday_" + str(c): np.zeros(10) for c in range(7) if c != str(pred_idx.day_of_week)})
+    pred_df = pred_df.assign(**{"weekday_" + str(c): np.zeros(10) for c in range(7) if c != pred_idx.day_of_week})
     pred_df["rel_price_range"] = 2 * (pred_df["interval_high"] - pred_df["interval_low"]) / (
         pred_df["interval_high"] + pred_df["interval_low"])
     pred_df["range_volatility"] = np.sqrt(
