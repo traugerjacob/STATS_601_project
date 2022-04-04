@@ -36,4 +36,4 @@ def get_r_hat(A, B):
                        for ell in range(1, MOD.minute_lag)], axis=0)).T
         ], axis=1)
     pred_df = pd.get_dummies(pred_df, columns=["asset"], prefix="asset").reset_index(drop=True)
-    return MOD.predict(full_pred_df[MOD.regressor_cols])
+    return MOD.predict(pred_df[MOD.regressor_cols])
