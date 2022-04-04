@@ -1,3 +1,7 @@
+# file to submit to the online judge
+# Josh Wasserman (jwasserman2)
+# April 2022
+
 from datetime import datetime, date, timedelta
 import pandas as pd
 import pickle
