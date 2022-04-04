@@ -31,9 +31,9 @@ def get_r_hat(A, B):
     )
     pred_df = pd.concat([
         pred_df,
-        pd.DataFrame(
-            pd.concat([A.shift(ell).rename(columns={k: "asset_" + str(k) + "_lag_" + str(ell) for k in A}).loc[pred_idx]
-                       for ell in range(1, MOD.minute_lag)], axis=0)).T
-        ], axis=1)
+        pd.concat([
+        pd.concat([A.shift(ell).loc[pred_idx]] * 10, axis=1).set_axis(["asset_" + str(k) + "_lag_" + str(ell) for k in range(10)], axis=1)
+        for ell in range(1, MOD.minute_lag + 1)], axis=1)],
+        axis=1)
     pred_df = pd.get_dummies(pred_df, columns=["asset"], prefix="asset").reset_index(drop=True)
     return MOD.predict(pred_df[MOD.regressor_cols])
