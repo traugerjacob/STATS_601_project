@@ -163,16 +163,19 @@ def fit_model(data, y, regressor_cols, model_class, model_args):
     return mod
 
 if __name__ == "__main__":
+    MINUTE_LAG = 60
+    RSI_K = 60
+    TRAIN_ADVANCE = 10
     lp = pd.read_pickle("log_price.df")
     vol = pd.read_pickle("volume_usd.df")
-    train_df = create_features(lp, vol, train_advance=10, minute_lag=60, rsi_k=60)
+    train_df = create_features(lp, vol, train_advance=TRAIN_ADVANCE, minute_lag=MINUTE_LAG, rsi_k=RSI_K)
     train_df = train_df.sort_values("timestamp").dropna().reset_index(drop=True)
     regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
     model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                    {"alphas": np.logspace(-1, 1)}, parallel=True)
     mod = fit_model(train_df, "return", regressor_cols, RidgeCV, {"alphas": np.logspace(-1, 1)})
-    mod.minute_lag = 30
-    mod.rsi_k = 30
+    mod.minute_lag = MINUTE_LAG
+    mod.rsi_k = RSI_K
     mod.regressor_cols = regressor_cols
     with open("mod.pkl", "wb") as f:
         pickle.dump(mod, f)

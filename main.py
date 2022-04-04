@@ -45,3 +45,31 @@ def get_r_hat(A, B):
 
     full_pred_df = pd.get_dummies(full_pred_df, columns=["asset"], prefix="asset").reset_index(drop=True)
     return MOD.predict(full_pred_df[MOD.regressor_cols])
+
+
+def get_r_hat(A, B):
+    pred_idx = A.index[-1]
+    pred_df = pd.DataFrame({
+        "asset": np.arange(10),
+        "weekday_"  + str(pred_idx.day_of_week): np.ones(10),
+        "log_vol_sum": np.log(B.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].sum(0)),
+        "interval_high": A.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].max(0),
+        "interval_low": A.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].min(0),
+        "rsi": A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(x, 0)).sum(0) /
+        (A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(x, 0)).sum(0) +
+         A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(-x, 0)).sum(0)),
+    })
+    pred_df = pred_df.assign(**{"weekday_" + str(c): np.zeros(10) for c in range(7) if c != weekday})
+    pred_df["rel_price_range"] = 2 * (pred_df["interval_high"] - pred_df["interval_low"]) / (
+        pred_df["interval_high"] + pred_df["interval_low"])
+    pred_df["range_volatility"] = np.sqrt(
+        np.square(np.log(np.exp(pred_df["interval_high"]) / np.exp(pred_df["interval_low"]))) / (4 * np.log(2))
+    )
+    pred_df = pd.concat([
+        pred_df,
+        pd.DataFrame(
+            pd.concat([A.shift(ell).rename(columns={k: "asset_" + str(k) + "_lag_" + str(ell) for k in A}).loc[pred_idx]
+                       for ell in range(1, ell)], axis=0)).T
+        ], axis=1)
+    pred_df = pd.get_dummies(pred_df, columns=["asset"], prefix="asset").reset_index(drop=True)
+    return MOD.predict(full_pred_df[MOD.regressor_cols])
