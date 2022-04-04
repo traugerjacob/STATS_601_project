@@ -5,6 +5,7 @@
 from datetime import datetime, date, timedelta
 from joblib import delayed, Parallel, parallel_backend, wrap_non_picklable_objects
 import pandas as pd
+import pickle
 import numpy as np
 import scipy.sparse as sparse
 from sklearn.ensemble import RandomForestRegressor
@@ -155,11 +156,23 @@ def walkforward_cv(data,
 
     return np.corrcoef(model_scores, rowvar=False)[0,1]
 
+
+def fit_model(data, y, regressor_cols, model_class, model_args):
+    mod = model_class(**model_args)
+    mod.fit(data[regressor_cols], data[y])
+    return mod
+
 if __name__ == "__main__":
     lp = pd.read_pickle("log_price.df")
     vol = pd.read_pickle("volume_usd.df")
     train_df = create_features(lp.iloc[0:10000], vol.iloc[0:10000])
-    train_df = train_df.sort_values("timestamp").dropna()
+    train_df = train_df.sort_values("timestamp").dropna().reset_index(drop=True)
     regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
     model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                    {"alphas": np.logspace(-1, 1)}, parallel=True)
+    mod = fit_model(train_df, "return", regressor_cols, RidgeCV, {"alphas": np.logspace(-1, 1)})
+    mod.minute_lag = 30
+    mod.rsi_k = 30
+    mod.regressor_cols = regressor_cols
+    with open("mod.pkl", "wb") as f:
+        pickle.dump(mod, f)
