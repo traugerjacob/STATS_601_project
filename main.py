@@ -2,14 +2,12 @@ from datetime import datetime, date, timedelta
 import pandas as pd
 import pickle
 import numpy as np
-from time import time
 
 with open("mod.pkl", "rb") as f:
     MOD = pickle.load(f)
 
 
 def get_r_hat(A, B):
-    start_time = time()
     weekday = str(A.index[-1].day_of_week)
     full_pred_df = pd.DataFrame()
     pred_idx = A.index[-1]
