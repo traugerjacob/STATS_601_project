@@ -164,15 +164,40 @@ def fit_model(data, y, regressor_cols, model_class, model_args):
 if __name__ == "__main__":
     MINUTE_LAG = 30
     RSI_K = 30
-    TRAIN_ADVANCE = 10
+    TRAIN_ADVANCE = 5
     lp = pd.read_pickle("log_price.df")
     vol = pd.read_pickle("volume_usd.df")
     train_df = create_features(lp, vol, train_advance=TRAIN_ADVANCE, minute_lag=MINUTE_LAG, rsi_k=RSI_K)
     train_df = train_df.sort_values("timestamp").dropna().reset_index(drop=True)
     regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"]]
+
+    rf_walkforward_cv_scores = {}
+    i = 0
+    for ntrees in np.arange(25, 200)[::25]:
+        for max_depth in np.arange(5, 50)[::5]:
+            for max_features in np.linspace(0.25, 1, 4):
+                rf_walkforward_cv_scores[str(i)] = {
+                    "ntrees": ntrees,
+                    "max_depth": max_depth,
+                    "max_features": max_features,
+                    "oos_corr": walkforward_cv(train_df,
+                                                "return",
+                                                regressor_cols,
+                                                20000,
+                                                10000,
+                                                RandomForestRegressor,
+                                                {"n_estimators": ntrees,
+                                                 "max_depth": max_depth,
+                                                 "max_features": max_features,}),
+                }
+                i +=1
     model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                    {"alphas": np.logspace(-1, 1)}, parallel=True)
     mod = fit_model(train_df, "return", regressor_cols, RidgeCV, {"alphas": np.logspace(-1, 1)})
+    mod = fit_model(train_df, "return", regressor_cols, RandomForestRegressor,
+                    {"n_estimators": 25,
+                     "max_depth": 5,
+                     "max_features": 0.25,})
     mod.minute_lag = MINUTE_LAG
     mod.rsi_k = RSI_K
     mod.regressor_cols = regressor_cols
