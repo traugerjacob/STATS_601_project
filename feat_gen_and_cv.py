@@ -10,6 +10,7 @@ import scipy.sparse as sparse
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import RidgeCV
 from time import time
+from tslearn.clustering import TimeSeriesKMeans
 
 lp = pd.read_pickle("log_price.df")
 vol = pd.read_pickle("volume_usd.df")
@@ -101,7 +102,6 @@ def walkforward_cv(data,
     Run walk-forward cross-validation in parallel for a given model with 'fit' and 'score'
     methods
     NOTE: need to order by increasing timestamp
-
     Params
     ------
     * data: DataFrame, includes both the response variable and features to use for training
@@ -113,12 +113,58 @@ def walkforward_cv(data,
     * model_args: dict, dictionary of the hyperparameters to use for the model architecture
     * parallel: bool, if True, will run jobs in parallel using a 'multiprocessing' backend. If False,
         will run jobs sequentially
-
     Returns
     -------
-    List of correlation coefficients between predictions and true values of the response for each
+    Correlation coefficient between predictions and true values of the response over all
     of the test windows
     """
+    def _fit_and_score(train_X, test_X, model, regressor_cols, y):
+        model.fit(train_X[regressor_cols], train_X[y])
+
+        return pd.DataFrame({
+            "pred": model.predict(test_X[regressor_cols]),
+            "y": test_X[y]})
+
+    @delayed
+    @wrap_non_picklable_objects
+    def _delayed_fit_and_score(train_X, test_X, model, regressor_cols, y):
+        return _fit_and_score(train_X, test_X, model, regressor_cols, y)
+
+
+    nbatches = int(np.floor((data.shape[0] - train_window) / test_window))
+    job_args = {
+        b: {
+        'train_X': data.iloc[(b * test_window):(b * test_window + train_window)],
+        'test_X': data.iloc[(b * test_window + train_window):((b+1) * test_window + train_window)],
+        'model': model_class(**model_args),
+        'regressor_cols': regressor_cols,
+        'y': y,
+        }
+        for b in range(nbatches)
+    }
+    if parallel:
+        model_jobs = [_delayed_fit_and_score(**b) for b in job_args.values()]
+        print("Running jobs in parallel")
+        with parallel_backend("multiprocessing"):
+            out = Parallel(n_jobs=min(nbatches, 20), verbose=11, pre_dispatch='n_jobs')(model_jobs)
+        model_scores = pd.concat(out, axis=0)
+    else:
+        model_scores = pd.DataFrame()
+        print("Running jobs sequentially")
+        for j in job_args.values():
+            model_scores = pd.concat([model_scores, _fit_and_score(**j)], axis=0)
+
+    return np.corrcoef(model_scores, rowvar=False)[0,1]
+
+
+def random_kmer_cv(data,
+                   y,
+                   regressor_cols,
+                   kmer_length,
+                   prediction_length,
+                   model_class,
+                   model_args,
+                   parallel=False):
     def _fit_and_score(train_X, test_X, model, regressor_cols, y):
         model.fit(train_X[regressor_cols], train_X[y])
 
@@ -130,7 +176,8 @@ def walkforward_cv(data,
         return _fit_and_score(train_X, test_X, model, regressor_cols, y)
 
 
-    nbatches = int(np.floor((data.shape[0] - train_window) / test_window))
+    start = np.random.randint(low=0, high=kmer_length + prediction_length)
+    batch_starts = []
     job_args = {
         b: {
         'train_X': data.iloc[(b * test_window):(b * test_window + train_window)],
@@ -161,3 +208,205 @@ regressor_cols = [c for c in train_df.columns if c not in ["return", "timestamp"
 model_scores = walkforward_cv(train_df, "return", regressor_cols, 2000, 200, RidgeCV,
                {"alphas": np.logspace(-1, 1)}, parallel=True)
 np.mean(model_scores)
+
+# correlation among asset returns
+returns = (lp.shift(-30) - lp).dropna()
+returns_corr = np.corrcoef(returns, rowvar=False)
+returns_corr_df = pd.DataFrame(np.vstack((np.repeat(np.arange(10), 10), np.array([c for c in range(10)] * 10))).T)
+returns_corr_df["corr"] = 0
+for x, y in zip(returns_corr_df[0], returns_corr_df[1]):
+    returns_corr_df.loc[(returns_corr_df[0] == x) & (returns_corr_df[1] == y), "corr"] = returns_corr[x, y]
+plt.scatter(returns_corr_df[0], returns_corr_df[1], c=np.sign(returns_corr_df["corr"]),
+            s=np.abs(returns_corr_df["corr"]) * 1000, cmap="RdBu")
+
+# asset 2 modeling
+minute_lag = 30
+asset_2_df = pd.DataFrame({"return": returns.loc[returns.index[30::10], 2]})
+asset_2_df = pd.concat([
+    asset_2_df,
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].max(0) for idx in asset_2_df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_interval_high" for k in range(10)}).set_index(asset_2_df.index),
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].min(0) for idx in asset_2_df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_interval_low" for k in range(10)}).set_index(asset_2_df.index),
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(x, 0)).sum(0) /
+        (lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(x, 0)).sum(0) +
+         lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(-x, 0)).sum(0))
+        for idx in asset_2_df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_rsi" for k in range(10)}).set_index(asset_2_df.index)],
+    axis=1)
+for asset in np.arange(10):
+    range_col = "asset_" + str(asset) + "_rel_price_range"
+    volatility_col = "asset_" + str(asset) + "_range_volatility"
+    interval_high_col = "asset_" + str(asset) + "_interval_high"
+    interval_low_col = "asset_" + str(asset) + "_interval_low"
+    asset_2_df[range_col] = 2 * (asset_2_df[interval_high_col] - asset_2_df[interval_low_col]) / (
+            asset_2_df[interval_high_col] + asset_2_df[interval_low_col])
+    asset_2_df[volatility_col] = np.sqrt(
+        np.square(np.log(np.exp(asset_2_df[interval_high_col]) / np.exp(asset_2_df[interval_low_col]))) / (4 * np.log(2))
+    )
+
+regressor_cols = [c for c in asset_2_df if c != "return"]
+y = asset_2_df["return"]
+asset_2_ridge = RidgeCV(alphas=np.logspace(-1, 1))
+asset_2_ridge.fit(asset_2_df[regressor_cols], y)
+ridge_coefs = pd.DataFrame({"feat": regressor_cols, "coef": asset_2_ridge.coef_}).sort_values("coef")
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+ax.barh(y = ridge_coefs["feat"], width = ridge_coefs["coef"], align = "center")
+ax.set_title("Ridge Coeffs")
+plt.show()
+
+rf = RandomForestRegressor(n_estimators=100, max_depth=10, max_features=0.5)
+rf.fit(asset_2_df[regressor_cols], y)
+rf_coefs = pd.DataFrame({"feat": regressor_cols, "feat_importance": rf.feature_importances_}).sort_values("feat_importance")
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+ax.barh(y = rf_coefs["feat"], width = rf_coefs["feat_importance"], align = "center")
+ax.set_title("RF(100 trees, max_depth=10, max_features=0.5) Feature Importances")
+plt.show()
+
+rf_walkforward_cv_scores = {}
+i = 0
+for ntrees in [50, 100, 200]:
+    for max_depth in [5, 10, 25, 50]:
+        for max_features in np.linspace(0.25, 1, 4):
+            rf_walkforward_cv_scores[str(i)] = {
+                "ntrees": ntrees,
+                "max_depth": max_depth,
+                "max_features": max_features,
+                "oos_corr": walkforward_cv(asset_2_df,
+                                            "return",
+                                            regressor_cols,
+                                            10000,
+                                            1440,
+                                            RandomForestRegressor,
+                                            {"n_estimators": ntrees,
+                                             "max_depth": max_depth,
+                                             "max_features": max_features,},
+                                            parallel=True),
+            }
+            i +=1
+
+
+
+max_oos_corr = max([r['oos_corr'] for r in rf_walkforward_cv_scores.values()])
+[v for k, v in rf_walkforward_cv_scores.items() if v['oos_corr'] == max_oos_corr]
+
+# spline and technical indicator interaction model
+from patsy import dmatrix
+minute_lag = 30
+df = returns.loc[returns.index[30::10]].rename(columns={k: "asset_" + str(k) + "_return" for k in range(10)})
+df = pd.concat([
+    df,
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].max(0) for idx in df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_interval_high" for k in range(10)}).set_index(df.index),
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].min(0) for idx in df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_interval_low" for k in range(10)}).set_index(df.index),
+    pd.concat([
+        lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(x, 0)).sum(0) /
+        (lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(x, 0)).sum(0) +
+         lp.loc[idx - timedelta(minutes=minute_lag):idx].applymap(lambda x: max(-x, 0)).sum(0))
+        for idx in df.index], axis=1).T.rename(
+        columns={k: "asset_" + str(k) + "_rsi" for k in range(10)}).set_index(df.index)],
+    axis=1)
+for asset in np.arange(10):
+    range_col = "asset_" + str(asset) + "_rel_price_range"
+    volatility_col = "asset_" + str(asset) + "_range_volatility"
+    interval_high_col = "asset_" + str(asset) + "_interval_high"
+    interval_low_col = "asset_" + str(asset) + "_interval_low"
+    df[range_col] = 2 * (df[interval_high_col] - df[interval_low_col]) / (df[interval_high_col] + df[interval_low_col])
+    df[volatility_col] = np.sqrt(
+        np.square(np.log(np.exp(df[interval_high_col]) / np.exp(df[interval_low_col]))) / (4 * np.log(2))
+    )
+df = df.reset_index()
+
+train_df = pd.melt(df, id_vars = [c for c in df if "return" not in c],
+                   value_vars=["asset_" + str(k) + "_return" for k in range(10)])
+train_df['asset'] = train_df['variable'].str.replace("asset_", "").str.replace("_return", "")
+train_df['cluster'] = 0
+train_df.loc[train_df['asset'].isin(["0", "9", "8"]), "cluster"] = 1
+train_df.loc[train_df['asset'] == "2", "cluster"] = 2
+train_df = train_df.sort_values("timestamp").reset_index(drop = True)
+train_df = (train_df.set_index(train_df["timestamp"])
+            .drop(columns=['variable', "timestamp"])
+            .rename(columns={'value': 'return'}))
+spline_formula = " + ".join(["C(asset) * bs(%s, df=4)" % j for j in train_df if j not in ["return", "asset", "cluster"]])
+spline_train_df = dmatrix("~ %s" % spline_formula, train_df, return_type="dataframe")
+spline_train_df["return"] = train_df["return"]
+
+WF_TRAIN_WINDOW = 100800 # 7 days * 1440 seconds * 10 assets
+WF_TEST_WINDOW = 14400 # 1 day * 1440 seconds * 10 assets
+
+# individual asset spline regression
+spline_formula = " + ".join(["bs(%s, df=4)" % j for j in train_df if j not in ["return", "asset", "cluster"]])
+spline_train_df = dmatrix("~ %s" % spline_formula, train_df[train_df["asset"] == "0"], return_type="dataframe")
+spline_train_df["return"] = train_df.loc[train_df["asset"] == "0", "return"]
+INDIVID_ASSET_WF_TRAIN_WINDOW = 7 * 1440 # 7 days * 1440 seconds
+INDIVID_ASSET_WF_TEST_WINDOW = 10000 # 1 day * 1440 seconds
+rf_spline_scores = walkforward_cv(spline_train_df, "return", [c for c in spline_train_df if "return" not in c],
+                                  INDIVID_ASSET_WF_TRAIN_WINDOW, INDIVID_ASSET_WF_TEST_WINDOW, RandomForestRegressor,
+                                  {"n_estimators": 50, "max_depth": 10, "max_features": 1.0,}, parallel=True)
+
+def fit_model(data, y, regressor_cols, model_class, model_args):
+    mod = model_class(**model_args)
+    mod.fit(data[regressor_cols], data[y])
+    return mod
+
+individ_models = {}
+for asset in range(10):
+    spline_train_df = dmatrix("~ %s" % spline_formula, train_df[train_df["asset"] == str(asset)],
+                              return_type="dataframe")
+    spline_train_df["return"] = train_df.loc[train_df["asset"] == str(asset), "return"]
+    individ_models['mod_' + str(asset)] = fit_model(
+        spline_train_df, "return", [c for c in spline_train_df if "return" not in c],
+        RandomForestRegressor,{"n_estimators": 50, "max_depth": 10, "max_features": 1.0,})
+
+for mod_name, mod in individ_models.items():
+    with open("../project/%s.pkl" % mod_name, "wb") as f:
+        pickle.dump(mod, f)
+
+analyze_idx = lp.index[::1440]
+analyze_df = pd.concat([pd.DataFrame({
+        "idx": idx,
+        "asset": np.arange(10),
+        "interval_high": lp.loc[idx - timedelta(minutes=1439):idx].max(0),
+        "interval_low": lp.loc[idx - timedelta(minutes=1439):idx].min(0),
+        "rsi": lp.loc[idx - timedelta(minutes=1439):idx].applymap(lambda x: max(x, 0)).sum(0) /
+        (lp.loc[idx - timedelta(minutes=1439):idx].applymap(lambda x: max(x, 0)).sum(0) +
+         lp.loc[idx - timedelta(minutes=1439):idx].applymap(lambda x: max(-x, 0)).sum(0)),
+         }) for idx in analyze_idx], axis=0)
+
+analyze_df = analyze_df.set_index(analyze_df["idx"]).drop(columns=["idx"])
+kmeans = KMeans()
+kmeans.fit(analyze_df[[c for c in analyze_df if c != "asset"]])
+pd.DataFrame({'asset': analyze_df['asset'], 'label': kmeans.labels_})
+
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+from sklearn.cluster import KMeans
+fig, ax = plt.subplots(1, 1, figsize=(12,12))
+cmap = dict(zip(np.arange(10), ["#32a852", "#73149c", "#f037c5", "#f09a37", "#1324d6",
+                              "#fa141f", "#0ee3df", "#69adfa", "#e79cf0", "#120214"]))
+metric = "interval_high"
+for asset in np.arange(10):
+    plt.plot(analyze_df[analyze_df["asset"] == asset].index,
+             analyze_df.loc[analyze_df["asset"] == asset, metric],
+             color=cmap[asset], label="asset_" + str(asset))
+plt.legend()
+plt.show()
+
+
+pred_df = pd.DataFrame({
+    "asset": np.arange(10),
+    "weekday_"  + str(pred_idx.day_of_week): np.ones(10),
+    "log_vol_sum": np.log(B.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].sum(0)),
+    "interval_high": A.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].max(0),
+    "interval_low": A.loc[pred_idx - timedelta(minutes=MOD.minute_lag):pred_idx].min(0),
+    "rsi": A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(x, 0)).sum(0) /
+    (A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(x, 0)).sum(0) +
+     A.loc[pred_idx - timedelta(minutes=MOD.rsi_k):pred_idx].applymap(lambda x: max(-x, 0)).sum(0)),
+})
