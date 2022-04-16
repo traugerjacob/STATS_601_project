@@ -9,6 +9,7 @@ from time import time
 from itertools import product
 from statsmodels.regression.linear_model import OLS
 from ols_tree import OLS_Tree
+import pickle
 
 class Task():
 
@@ -38,11 +39,21 @@ class Task():
     def get_pred_args(self):
         return self.pred_args
 
-    def save_models(self,):
-        pass
+    def save_models(self, names=None):
+        if names == None:
+            for i in range(len(self.models)):
+                with open(f"model_{i}.pkl", "wb") as f:
+                    pickle.dump(self.models[i], f)
+        else:
+            for i in range(len(self.models)):
+                with open(names[i], "wb") as f:
+                    pickle.dump(self.models[i], f)
 
-    def load_models(path_to_models):
-        pass
+    def load_models(self, path_to_models):
+        self.models = []
+        for i in path_to_models:
+            with open(i, "rb") as f:
+                self.models.append(pickle.load(f))
 
     def remove_outliers(self, data):
         reg_cols = [c for c in data if c not in ["return", "timestamp", "asset", "index"]]
@@ -82,7 +93,7 @@ class Task():
                 best_params = cur_args
         return (best_corr, cur_args)
 
-    def walkforward_cv(self, train_window=10000, test_window=1440, predictors=None, predictors_arguments=None):
+    def walkforward_cv(self, train_window=2600, test_window=1000, predictors=None, predictors_arguments=None):
         """Runs walkforward_cv on each model. Returns cv corr."""
         if predictors != None:
             self.set_predictors(predictors)
@@ -91,6 +102,7 @@ class Task():
         regressor_cols = [c for c in self.train_df_assets[0] if c not in ["return", "timestamp", "asset", "index"]]
         y = "return"
         cors = np.zeros(len(self.pred_types))
+        mod_scores = np.empty((0,2))
         for i in range(len(self.pred_types)):
             assets = self.assets_per_pred[i]
             frames = [self.train_df_assets[j] for j in assets]
@@ -98,10 +110,14 @@ class Task():
             outlier_frames = [self.train_df_assets_w_outliers[j] for j in assets]
             outlier_dataset = pd.concat(outlier_frames)
             print(f"running {str(self.pred_types[i])} on asset(s) {assets}")
-            cors[i] = self.walkforward_cv_one(outlier_dataset, y, regressor_cols, train_window, test_window, self.pred_types[i], self.pred_args[i])
+            model_scores, corrs = self.walkforward_cv_one(outlier_dataset, y, regressor_cols, train_window, test_window, self.pred_types[i], self.pred_args[i])
+            cors[i] = corrs
+            mod_scores = np.concatenate((mod_scores, model_scores), axis=0)
             print(f"walkforward cv gives correlation of {cors[i]}")
         print(cors)
-        return cors
+        correlation = np.corrcoef(mod_scores, rowvar=False)[0,1]
+        print(correlation)
+        return (cors, correlation)
 
     def train_models(self, predictors=None, predictors_arguments=None, names=None):
         if predictors != None:
@@ -109,7 +125,7 @@ class Task():
         if predictors_arguments != None:
             self.set_pred_args(predictors_arguments)
         self.models = []
-        for i in range(len(predictors)):
+        for i in range(len(self.pred_types)):
             self.models.append(self.pred_types[i](self.pred_args[i]))
             assets = self.assets_per_pred[i]
             frames = [self.train_df_assets[j] for j in assets]
@@ -119,7 +135,18 @@ class Task():
             self.models[i].fit(dataset[regressor_cols], y)
         return self.models
 
-
+    def test_models_all_data(self):
+        vals = np.empty((0,2))
+        for j in range(len(self.models)):
+            print(j)
+            regressor_cols = [c for c in self.train_df_assets[j] if c not in ["return", "timestamp", "asset", "index"]]
+            y = self.train_df_assets[j]["return"]
+            preds = self.models[j].predict(self.train_df_assets[j][regressor_cols])
+            print(np.vstack((preds, y)).T)
+            vals = np.concatenate((vals, np.vstack((preds, y)).T))
+        ret = np.corrcoef(vals, rowvar=False)[0,1]
+        print(ret)
+        return ret
      
     def create_dataframes(self, train_advance=10, minute_lag=30, rsi_k=30):
         """
@@ -148,6 +175,8 @@ class Task():
             outliers, no_outliers = self.create_datasets_one(i, lp, vol)
             self.train_df_assets[i] = no_outliers
             self.train_df_assets_w_outliers[i] = outliers
+        print(self.train_df_assets[0])
+        print(self.train_df_assets[0].columns)
         return self.train_df_assets
     
     def create_datasets_one(self, asset, lp, vol, train_advance=10, minute_lag=90):
@@ -281,7 +310,7 @@ class Task():
         if increasing_train_window:
             job_args = {
                 b: {
-                'train_X': self.remove_outliers(data).iloc[:(b * test_window + train_window)],
+                'train_X': self.remove_outliers(data.iloc[:(b * test_window + train_window)]),
                 'test_X': data.iloc[(b * test_window + train_window):((b+1) * test_window + train_window)],
                 'model': model_class(model_args),
                 'regressor_cols': regressor_cols,
@@ -292,7 +321,7 @@ class Task():
         else:
             job_args = {
                 b: {
-                'train_X': self.remove_outliers(data).iloc[(b * test_window):(b * test_window + train_window)],
+                'train_X': self.remove_outliers(data.iloc[(b * test_window):(b * test_window + train_window)]),
                 'test_X': data.iloc[(b * test_window + train_window):((b+1) * test_window + train_window)],
                 'model': model_class(model_args),
                 'regressor_cols': regressor_cols,
@@ -317,19 +346,25 @@ class Task():
                 model_scores = pd.DataFrame()
                 for j in job_args.values():
                     model_scores = pd.concat([model_scores, _fit_and_score(**j)], axis=0)
-        return np.corrcoef(model_scores, rowvar=False)[0,1]
+        return (model_scores, np.corrcoef(model_scores, rowvar=False)[0,1])
 
 if __name__ == "__main__":
     #t = Task("log_price.df", "volume_usd.df", pred_type=["OLS" for i in range(4)], pred_args=[{},{},{},{}], assets_for_each_pred=[(0,), (1,4,5,6), (2,), (3,), (7,8,9)])
-    t = Task("log_price.df", "volume_usd.df", pred_type=["OLS" for i in range(10)], pred_args=[{} for i in range(10)], assets_for_each_pred=[(0,), (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)])
-    t.walkforward_cv()
+    #t = Task("log_price.df", "volume_usd.df", pred_type=["OLS" for i in range(10)], pred_args=[{} for i in range(10)], assets_for_each_pred=[(0,), (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)])
+    #t.walkforward_cv()
     
-    #t = Task("log_price.df", "volume_usd.df", pred_type=["adaboost" for i in range(10)], pred_args=[{"n_estimators": 20} for i in range(10)], assets_for_each_pred=[(0,), (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)])
-    #t.hyperparams_search({"n_estimators": [1,2]},0)
-    ##t.walkforward_cv()
-    times = time()
+    #t = Task("log_price.df", "volume_usd.df", pred_type=["adaboost" for i in range(10)], pred_args=[{"n_estimators": 50} for i in range(10)], assets_for_each_pred=[(0,), (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)])
+    #t.walkforward_cv()
+    
+    #times = time()
+    
     t = Task("log_price.df", "volume_usd.df", pred_type=["ols_tree" for i in range(10)], pred_args=[[.5, {}, {"n_estimators": 50}] for i in range(10)], assets_for_each_pred=[(0,), (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,)])
-    t.walkforward_cv()
+    #t.train_models()
+    #t.save_models()
+    t.load_models([f"model_{i}.pkl" for i in range(10)])
+    t.test_models_all_data()
+    #t.walkforward_cv()
+    
     #best_vals = []
     #for i in range(10):
     #    best_vals.append(t.hyperparams_search({"v":[i/20 for i in range(1, 20)], "n_estimators": [10,20,50]}, i))
